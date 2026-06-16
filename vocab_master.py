@@ -162,6 +162,7 @@ class HotkeyThread(QThread):
 
 def db_connect():
     conn = sqlite3.connect(DB_PATH)
+    # Existing words table
     conn.execute("""
         CREATE TABLE IF NOT EXISTS words (
             id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -174,8 +175,31 @@ def db_connect():
             learned_at  TEXT
         )
     """)
+    # <-- NEW: Settings table to hold the API key
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS settings (
+            key         TEXT PRIMARY KEY,
+            value       TEXT
+        )
+    """)
     conn.commit()
     return conn
+
+def db_save_setting(key: str, value: str):
+    conn = db_connect()
+    try:
+        conn.execute("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)", (key, value))
+        conn.commit()
+    finally:
+        conn.close()
+
+def db_get_setting(key: str) -> str:
+    conn = db_connect()
+    try:
+        row = conn.execute("SELECT value FROM settings WHERE key = ?", (key,)).fetchone()
+        return row[0] if row else ""
+    finally:
+        conn.close()
 
 def db_save_word(data: dict):
     conn = db_connect()
@@ -1239,6 +1263,16 @@ class MainWindow(QMainWindow):
         self.api_input_widget.hide() # Hidden by default
         self.sidebar_layout.addWidget(self.api_input_widget)
 
+        global GROQ_API_KEY
+        saved_key = db_get_setting("groq_api_key")
+        if saved_key:
+            GROQ_API_KEY = saved_key
+            self.api_toggle_btn.setText("🔑  Update API Key")
+            self.api_toggle_btn.setStyleSheet(f"""
+                text-align: left; padding: 12px 16px; background: transparent; 
+                border: none; color: {PALETTE['success']}; font-size: 14px; font-weight: 600;
+            """)
+
         main_layout.addWidget(self.sidebar)
 
         # ── Stacked Widget & Pages Setup ──
@@ -1289,11 +1323,13 @@ class MainWindow(QMainWindow):
             self.api_input.setFocus()
             
     def _save_api_key(self):
-        """Saves the inputted key globally and updates the button aesthetic."""
+        """Saves the inputted key globally, to the database, and updates the button aesthetic."""
         global GROQ_API_KEY
         key = self.api_input.text().strip()
         if key:
             GROQ_API_KEY = key
+            db_save_setting("groq_api_key", key) # <-- Save to SQLite
+            
             self.api_toggle_btn.setText("🔑  Update API Key")
             self.api_toggle_btn.setStyleSheet(f"""
                 text-align: left; padding: 12px 16px; background: transparent; 
