@@ -265,7 +265,6 @@ class GradientHeader(QWidget):
         painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, self.text)
 
 
-# ── WORKER THREAD ─────────────────────────────────────────────────────────────
 
 # ── WORKER THREAD ─────────────────────────────────────────────────────────────
 
@@ -339,29 +338,26 @@ class BigTestWorker(QThread):
         try:
             client = Groq(api_key=GROQ_API_KEY)
             words_str = ", ".join(self.words)
-            
             prompt = f"""Create a strict vocabulary test for these words: {words_str}. 
 
 CRITICAL RULES:
-- Mix the 4 question types below randomly.
-- NEVER use the target word or its root in the question text or options for 'fill_blank' and 'definition_match'.
-- For 'multiple_choice', ALL 4 options MUST explicitly contain the target word, but 3 must use it nonsensically.
+Assign each word randomly to one of two question types:
+1. "guess_word": Provide a clear description/meaning of the word WITHOUT ever mentioning the word itself or its roots. The user must guess the word.
+2. "make_sentence": Provide the word and its clear description/meaning. The user will be asked to write a sentence using it.
 
-Return ONLY a JSON array of objects using these exact formats:
-
-1. fill_blank:
-{{ "word": "target", "type": "fill_blank", "question": "Sentence with ___.", "answer": "target", "explanation": "..." }}
-
-2. multiple_choice:
-{{ "word": "target", "type": "multiple_choice", "question": "Which sentence uses the word 'target' correctly?", "options": ["...", "...", "...", "..."], "correct": 2, "explanation": "..." }}
-(Note: "correct" must be the integer index 0-3 of the right option)
-
-3. scenario:
-{{ "word": "target", "type": "scenario", "question": "Brief situation. Does the concept of 'target' apply here?", "answer": "yes", "explanation": "..." }}
-
-4. definition_match:
-{{ "word": "target", "type": "definition_match", "question": "What word means: [dictionary definition without the word]?", "answer": "target", "explanation": "..." }}
-"""
+Respond ONLY with a valid JSON array:
+[
+  {{
+    "word": "lucid",
+    "type": "guess_word",
+    "description": "Expressed clearly; easy to understand."
+  }},
+  {{
+    "word": "ephemeral",
+    "type": "make_sentence",
+    "description": "Lasting for a very short time."
+  }}
+]"""
 
             response = client.chat.completions.create(
                 model=GROQ_MODEL,
@@ -381,6 +377,57 @@ Return ONLY a JSON array of objects using these exact formats:
         except Exception as e:
             self.error_occurred.emit(str(e))
 
+class SentenceEvalWorker(QThread):
+    result_ready   = pyqtSignal(dict)
+    error_occurred = pyqtSignal(str)
+
+    def __init__(self, word, sentence):
+        super().__init__()
+        self.word = word
+        self.sentence = sentence
+
+    def run(self):
+        global GROQ_API_KEY
+        if not GROQ_API_KEY:
+            self.error_occurred.emit("Groq API key is missing.")
+            return
+
+        try:
+            client = Groq(api_key=GROQ_API_KEY)
+            prompt = f"""You are a strict vocabulary teacher. The student was asked to write a sentence using the word "{self.word}".
+They wrote: "{self.sentence}"
+
+Critically examine this sentence for:
+1. Grammatical correctness.
+2. Contextual accuracy of the word "{self.word}".
+3. Is it an actual meaningful sentence (not just a fragment or gibberish)?
+
+Respond ONLY with a valid JSON object:
+{{
+  "status": "pass" or "retry",
+  "feedback": "Your clear, concise, critical feedback here.",
+  "corrected": "The corrected/improved sentence here (leave empty if it was perfect)"
+}}
+
+RULES:
+- Set "status" to "retry" ONLY if the sentence is gibberish, completely misuses the word, or isn't a proper sentence.
+- Set "status" to "pass" if it demonstrates understanding, even if you need to provide minor grammar tweaks in the "corrected" field."""
+
+            response = client.chat.completions.create(
+                model=GROQ_MODEL,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.3,
+                max_tokens=800,
+            )
+
+            raw = response.choices[0].message.content.strip()
+            match = re.search(r'\{[\s\S]*\}', raw)
+            if match:
+                self.result_ready.emit(json.loads(match.group()))
+            else:
+                self.error_occurred.emit("Could not parse AI evaluation.")
+        except Exception as e:
+            self.error_occurred.emit(str(e))
 
 # ── LEARNING PAGE ─────────────────────────────────────────────────────────────
 
@@ -873,119 +920,113 @@ class BigTestPage(QWidget):
         self.next_btn.hide()
         self.submit_btn.show()
         self.submit_btn.setEnabled(True)
+        self.submit_btn.setText("Submit Answer")
 
         qtype = q.get("type", "")
         word  = q.get("word", "")
-        self.q_type_label.setText({
-            "fill_blank":      "📝  Guess the Word from Context",
-            "multiple_choice": "🔘  Which Sentence Uses It Correctly?",
-            "scenario":        "🧠  Does the Word Apply?",
-            "definition_match":"📖  Guess the Word from its Meaning"
-        }.get(qtype, "Question"))
+        desc  = q.get("description", "")
 
-        # Both text-input modes hide the word
-        if qtype in ("fill_blank", "definition_match"):
-            self.word_label.setText("Word: ???")
-            self.word_label.setStyleSheet(
-                f"color: {PALETTE['danger']}; background: transparent; border: none; font-size: 15px;"
-            )
-        else:
-            self.word_label.setText(f"Word: {word}")
-            self.word_label.setStyleSheet(
-                f"color: {PALETTE['accent']}; background: transparent; border: none; font-size: 15px;"
-            )
-
-        self.question_lbl.setText(q.get("question", ""))
-
-        self.fill_input.hide()
-        self.fill_input.clear()
+        self.options_widget.hide() # We no longer use multiple choice
+        self.fill_input.show()
         self.fill_input.setEnabled(True)
-        self.options_widget.hide()
+        self.fill_input.clear()
+        
+        # Reset any previous word label masking
+        self.word_label.setText(f"Word: {word}")
+        self.word_label.setStyleSheet(f"color: {PALETTE['accent']}; font-size: 15px;")
 
-        while self.options_layout.count():
-            item = self.options_layout.takeAt(0)
-            if item.widget():
-                item.widget().deleteLater()
-
-        if qtype in ("fill_blank", "definition_match"):
-            self.fill_input.show()
-
-        elif qtype == "multiple_choice":
-            self._btn_group = QButtonGroup(self)
-            for i, opt in enumerate(q.get("options", [])):
-                rb = QRadioButton(f"  {opt}")
-                rb.setFont(QFont("Segoe UI", 13))
-                self._btn_group.addButton(rb, i)
-                frame = QFrame()
-                frame.setStyleSheet(f"""
-                    QFrame {{
-                        background-color: {PALETTE['surface']};
-                        border-radius: 10px;
-                        border: 1px solid {PALETTE['border']};
-                    }}
-                """)
-                fl = QHBoxLayout(frame)
-                fl.setContentsMargins(10, 6, 10, 6)
-                fl.addWidget(rb)
-                self.options_layout.addWidget(frame)
-            self.options_widget.show()
-
-        elif qtype == "scenario":
-            self._btn_group = QButtonGroup(self)
-            for i, opt in enumerate(["✅  Yes", "❌  No"]):
-                rb = QRadioButton(opt)
-                rb.setFont(QFont("Segoe UI", 14, QFont.Weight.Bold))
-                self._btn_group.addButton(rb, i)
-                self.options_layout.addWidget(rb)
-            self.options_widget.show()
+        if qtype == "guess_word":
+            self.q_type_label.setText("📝  Read the meaning and guess the word")
+            self.word_label.setText("Word: ???")
+            self.word_label.setStyleSheet(f"color: {PALETTE['danger']}; font-size: 15px;")
+            self.question_lbl.setText(f"Meaning: {desc}")
+            self.fill_input.setPlaceholderText("Type the exact word...")
+            
+        elif qtype == "make_sentence":
+            self.q_type_label.setText("✍️  Write a sentence using the word")
+            self.question_lbl.setText(f"Meaning: {desc}\n\nWrite a full sentence using '{word}'.")
+            self.fill_input.setPlaceholderText("Type your sentence here...")
 
         self.q_card.show()
 
     def _check_answer(self):
-        q     = self._questions[self._current_q]
+        q = self._questions[self._current_q]
         qtype = q.get("type", "")
-        correct     = False
-        explanation = q.get("explanation", "")
+        word = q.get("word", "")
 
-        if qtype in ("fill_blank", "definition_match"):
-            user_ans    = self.fill_input.text().strip().lower()
-            correct_ans = q.get("answer", "").strip().lower()
-            correct     = user_ans == correct_ans
-
-        elif qtype == "multiple_choice":
-            btn = self._btn_group.checkedButton()
-            if not btn:
-                self._show_warn("⚠️  Please select an option first.")
-                return
-            correct = self._btn_group.id(btn) == q.get("correct", 0)
-
-        elif qtype == "scenario":
-            btn = self._btn_group.checkedButton()
-            if not btn:
-                self._show_warn("⚠️  Please select Yes or No first.")
-                return
-            user_ans = "yes" if self._btn_group.id(btn) == 0 else "no"
-            correct  = user_ans.lower() == q.get("answer", "").lower()
-
-        if correct:
-            self._score += 1
-            self.feedback_lbl.setStyleSheet(f"color: {PALETTE['success']}; background: transparent; border: none;")
-            self.feedback_lbl.setText(f"✅  Correct!  {explanation}")
-        else:
-            self.feedback_lbl.setStyleSheet(f"color: {PALETTE['danger']}; background: transparent; border: none;")
-            self.feedback_lbl.setText(f"❌  Not quite.  {explanation}")
-
-        self.feedback_lbl.show()
-        self.submit_btn.hide()
-        
-        if qtype in ("fill_blank", "definition_match"):
+        if qtype == "guess_word":
+            user_ans = self.fill_input.text().strip().lower()
+            correct_ans = word.strip().lower()
+            
+            if user_ans == correct_ans:
+                self._score += 1
+                self.feedback_lbl.setStyleSheet(f"color: {PALETTE['success']};")
+                self.feedback_lbl.setText("✅  Correct!")
+            else:
+                self.feedback_lbl.setStyleSheet(f"color: {PALETTE['danger']};")
+                self.feedback_lbl.setText(f"❌  Incorrect. The exact word was '{correct_ans}'.")
+            
+            self.feedback_lbl.show()
             self.fill_input.setEnabled(False)
-        else:
-            for b in self._btn_group.buttons():
-                b.setEnabled(False)
+            self.submit_btn.hide()
+            self.next_btn.setText("Next →" if self._current_q < len(self._questions) - 1 else "See Final Results 🏆")
+            self.next_btn.show()
 
-        self.next_btn.setText("Next →" if self._current_q < len(self._questions) - 1 else "See Final Results 🏆")
-        self.next_btn.show()
+        elif qtype == "make_sentence":
+            sentence = self.fill_input.text().strip()
+            words_in_sentence = [w for w in sentence.split() if w.strip()]
+
+            # Validation Gate 1: Check if word exists
+            if word.lower() not in sentence.lower():
+                self._show_warn(f"⚠️ You must include the word '{word}' in your sentence!")
+                return
+            
+            # Validation Gate 2: Check if it's more than just the word itself
+            if len(words_in_sentence) <= 3:
+                self._show_warn("⚠️ Please write a complete sentence, not just a few words.")
+                return
+
+            # Pass validations, send to AI evaluator
+            self.submit_btn.setEnabled(False)
+            self.submit_btn.setText("Evaluating via AI...")
+            self.feedback_lbl.hide()
+
+            self.eval_worker = SentenceEvalWorker(word, sentence)
+            self.eval_worker.result_ready.connect(self._on_eval_ready)
+            self.eval_worker.error_occurred.connect(self._on_eval_error)
+            self.eval_worker.start()
+
+    def _on_eval_ready(self, result):
+        self.submit_btn.setText("Submit Answer")
+        self.submit_btn.setEnabled(True)
+
+        status = result.get("status", "retry")
+        feedback = result.get("feedback", "")
+        corrected = result.get("corrected", "")
+
+        if status == "retry":
+            self.feedback_lbl.setStyleSheet(f"color: {PALETTE['warning']};")
+            self.feedback_lbl.setText(f"🔄 Please try again:\n{feedback}")
+            self.feedback_lbl.show()
+            # Note: We intentionally do NOT hide the submit button or increment the score here.
+        else:
+            self._score += 1
+            self.feedback_lbl.setStyleSheet(f"color: {PALETTE['success']};")
+            msg = f"✅ Good job!\nFeedback: {feedback}"
+            if corrected:
+                msg += f"\n\nCorrected version: {corrected}"
+            self.feedback_lbl.setText(msg)
+            self.feedback_lbl.show()
+
+            self.fill_input.setEnabled(False)
+            self.submit_btn.hide()
+            self.next_btn.setText("Next →" if self._current_q < len(self._questions) - 1 else "See Final Results 🏆")
+            self.next_btn.show()
+
+    def _on_eval_error(self, err):
+        self.submit_btn.setText("Submit Answer")
+        self.submit_btn.setEnabled(True)
+        self._show_warn(f"⚠️ AI Evaluation Error: {err}")
 
     def _show_warn(self, msg):
         self.feedback_lbl.setText(msg)
@@ -1110,28 +1151,39 @@ class MainWindow(QMainWindow):
         main_layout.setSpacing(0)
 
         # ── Sidebar Setup ──
-        self.sidebar = QFrame()  # Changed to instance variable (self.sidebar)
-        self.sidebar.setFixedWidth(220)
-        self.sidebar.setStyleSheet(f"background-color: {PALETTE['surface']}; border-right: 1px solid {PALETTE['border']};")
-        sidebar_layout = QVBoxLayout(self.sidebar)
+        sidebar = QFrame()
+        sidebar.setFixedWidth(220)
+        sidebar.setStyleSheet(f"background-color: {PALETTE['surface']}; border-right: 1px solid {PALETTE['border']};")
+        sidebar_layout = QVBoxLayout(sidebar)
         sidebar_layout.setContentsMargins(0, 20, 0, 20)
         sidebar_layout.setSpacing(10)
+        # NOTE: Explicit Alignment Flag removed here so the stretch spacer below can work!
         
+        self.hide_sidebar_btn = QPushButton("◀ Hide Menu")
+        self.hide_sidebar_btn.setObjectName("secondary")
+        self.hide_sidebar_btn.setMinimumHeight(30)
+        self.hide_sidebar_btn.clicked.connect(self._hide_sidebar)
+        sidebar_layout.addWidget(self.hide_sidebar_btn)
+
         logo = QLabel("📚 VocabMaster")
         logo.setFont(QFont("Segoe UI", 16, QFont.Weight.Bold))
         logo.setStyleSheet(f"color: {PALETTE['text']}; margin-bottom: 20px;")
         sidebar_layout.addWidget(logo)
         
+        # Create Sidebar Buttons with Icons
         self.nav_learn = QPushButton("🔍  Learn Words")
         self.nav_list  = QPushButton("📖  My Word List")
         self.nav_tests = QPushButton("🏆  Practice Tests")
         
+        # Add Navigation Buttons to Sidebar Layout (They stay at the top)
         for btn in [self.nav_learn, self.nav_list, self.nav_tests]:
             btn.setCursor(Qt.CursorShape.PointingHandCursor)
             sidebar_layout.addWidget(btn)
             
+        # This stretch expands dynamically, forcing nav buttons UP and API controls DOWN
         sidebar_layout.addStretch()
 
+        # ── API Key Input Section ── (Stays at the absolute bottom)
         self.api_toggle_btn = QPushButton("🔑  Set Groq API Key")
         self.api_toggle_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.api_toggle_btn.setStyleSheet(f"""
@@ -1156,57 +1208,33 @@ class MainWindow(QMainWindow):
         self.api_save_btn.setStyleSheet(f"padding: 8px; font-size: 12px; border-radius: 6px;")
         self.api_save_btn.clicked.connect(self._save_api_key)
 
+        self.show_sidebar_btn = QPushButton("▶")
+        self.show_sidebar_btn.setObjectName("secondary")
+        self.show_sidebar_btn.setFixedWidth(30)
+        self.show_sidebar_btn.clicked.connect(self._show_sidebar)
+        self.show_sidebar_btn.hide() # Hidden by default
+
         input_lay.addWidget(self.api_input)
         input_lay.addWidget(self.api_save_btn)
         
-        self.api_input_widget.hide() 
+        self.api_input_widget.hide() # Hidden by default
         sidebar_layout.addWidget(self.api_input_widget)
 
-        main_layout.addWidget(self.sidebar)
-
-        # ── Right Content Area (Top Bar + Stack) ──
-        self.main_content = QWidget()
-        content_layout = QVBoxLayout(self.main_content)
-        content_layout.setContentsMargins(0, 0, 0, 0)
-        content_layout.setSpacing(0)
-
-        # Top Navigation Bar
-        self.top_bar = QWidget()
-        self.top_bar.setFixedHeight(50)
-        self.top_bar.setStyleSheet(f"background-color: {PALETTE['bg']}; border-bottom: 1px solid {PALETTE['border']};")
-        top_bar_layout = QHBoxLayout(self.top_bar)
-        top_bar_layout.setContentsMargins(15, 0, 15, 0)
-
-        # The Toggle Button
-        self.toggle_sidebar_btn = QPushButton("☰")
-        self.toggle_sidebar_btn.setFixedSize(40, 40)
-        self.toggle_sidebar_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.toggle_sidebar_btn.setStyleSheet(f"""
-            QPushButton {{
-                background: transparent; color: {PALETTE['text']};
-                font-size: 24px; border: none; border-radius: 8px;
-            }}
-            QPushButton:hover {{ background-color: {PALETTE['surface']}; }}
-        """)
-        self.toggle_sidebar_btn.clicked.connect(self._toggle_sidebar)
-        
-        top_bar_layout.addWidget(self.toggle_sidebar_btn)
-        top_bar_layout.addStretch()
-        content_layout.addWidget(self.top_bar)
+        main_layout.addWidget(sidebar)
 
         # ── Stacked Widget & Pages Setup ──
         self.stack = QStackedWidget()
-        content_layout.addWidget(self.stack, 1)
+        main_layout.addWidget(self.stack, 1)
 
+        # Initialize Pages
         self.learn_page     = LearningPage()
-        self.word_list_page = WordListPage()  
+        self.word_list_page = WordListPage()  # The new page we just added
         self.big_test_page  = BigTestPage()
 
-        self.stack.addWidget(self.learn_page)       
-        self.stack.addWidget(self.word_list_page)   
-        self.stack.addWidget(self.big_test_page)    
-
-        main_layout.addWidget(self.main_content, 1)
+        # Add to Stack
+        self.stack.addWidget(self.learn_page)       # Index 0
+        self.stack.addWidget(self.word_list_page)   # Index 1
+        self.stack.addWidget(self.big_test_page)    # Index 2
 
         # ── Connect Sidebar Buttons ──
         self.nav_learn.clicked.connect(lambda: self._switch_page(0))
@@ -1227,9 +1255,13 @@ class MainWindow(QMainWindow):
         # Set Initial Page
         self._switch_page(0)
 
-    def _toggle_sidebar(self):
-        """Toggles the visibility of the sidebar."""
-        self.sidebar.setVisible(not self.sidebar.isVisible())
+    def _hide_sidebar(self):
+        self.sidebar.hide()
+        self.show_sidebar_btn.show()
+
+    def _show_sidebar(self):
+        self.sidebar.show()
+        self.show_sidebar_btn.hide()
 
     def _toggle_api_input(self):
         """Shows or hides the API key input bar underneath the button."""
