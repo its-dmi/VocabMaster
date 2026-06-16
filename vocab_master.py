@@ -440,6 +440,58 @@ class LearningPage(QWidget):
         self._current_word = ""
         self._build_ui()
 
+    def _render_word_ui(self, data):
+        """Builds the visual card UI for a word, used by both local cache and AI results."""
+        # Title card
+        title_card = Card()
+        tc_layout = QVBoxLayout(title_card)
+        tc_layout.setContentsMargins(24, 20, 24, 20)
+        tc_layout.setSpacing(6)
+
+        word_lbl = QLabel(data.get("word", self._current_word).upper())
+        word_lbl.setFont(QFont("Segoe UI", 28, QFont.Weight.Bold))
+        word_lbl.setStyleSheet(f"color: {PALETTE['accent']}; background: transparent; border: none;")
+        tc_layout.addWidget(word_lbl)
+
+        pos_lbl = QLabel(data.get("pos", ""))
+        pos_lbl.setFont(QFont("Segoe UI", 13))
+        pos_lbl.setStyleSheet(
+            f"color: {PALETTE['accent2']}; background: transparent; border: none; font-style: italic;"
+        )
+        tc_layout.addWidget(pos_lbl)
+        self.content_layout.addWidget(title_card)
+
+        self._add_section_card("📖  Definition",          data.get("definition", ""), PALETTE['accent'])
+        self._add_section_card("🎬  Real-Life Situation", data.get("situation",   ""), PALETTE['accent2'])
+
+        sentences = data.get("sentences", [])
+        if sentences:
+            ex_card = Card()
+            ex_layout = QVBoxLayout(ex_card)
+            ex_layout.setContentsMargins(24, 20, 24, 20)
+            ex_layout.setSpacing(10)
+
+            hdr = QLabel("✏️  Example Sentences")
+            hdr.setFont(QFont("Segoe UI", 13, QFont.Weight.Bold))
+            hdr.setStyleSheet(f"color: {PALETTE['success']}; background: transparent; border: none;")
+            ex_layout.addWidget(hdr)
+
+            for i, s in enumerate(sentences):
+                s_fmt = re.sub(r'\*(.+?)\*', r'<b style="color:#7C6AF7">\1</b>', s)
+                lbl = QLabel(
+                    f"<span style='color:{PALETTE['subtext']}'>{i+1}.</span>  {s_fmt}"
+                )
+                lbl.setFont(QFont("Segoe UI", 14))
+                lbl.setWordWrap(True)
+                lbl.setStyleSheet(
+                    f"background: transparent; border: none; color: {PALETTE['text']};"
+                )
+                lbl.setTextFormat(Qt.TextFormat.RichText)
+                ex_layout.addWidget(lbl)
+            self.content_layout.addWidget(ex_card)
+
+        self.content_layout.addStretch()
+
     def _build_ui(self):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(32, 24, 32, 24)
@@ -558,59 +610,13 @@ class LearningPage(QWidget):
         self.status_label.setText("")
         self._clear_content()
 
+        # Save to database and update progress
         db_save_word(data)
         self.word_learned.emit()
         self.refresh_progress()
 
-        # Title card
-        title_card = Card()
-        tc_layout = QVBoxLayout(title_card)
-        tc_layout.setContentsMargins(24, 20, 24, 20)
-        tc_layout.setSpacing(6)
-
-        word_lbl = QLabel(data.get("word", self._current_word).upper())
-        word_lbl.setFont(QFont("Segoe UI", 28, QFont.Weight.Bold))
-        word_lbl.setStyleSheet(f"color: {PALETTE['accent']}; background: transparent; border: none;")
-        tc_layout.addWidget(word_lbl)
-
-        pos_lbl = QLabel(data.get("pos", ""))
-        pos_lbl.setFont(QFont("Segoe UI", 13))
-        pos_lbl.setStyleSheet(
-            f"color: {PALETTE['accent2']}; background: transparent; border: none; font-style: italic;"
-        )
-        tc_layout.addWidget(pos_lbl)
-        self.content_layout.addWidget(title_card)
-
-        self._add_section_card("📖  Definition",          data.get("definition", ""), PALETTE['accent'])
-        self._add_section_card("🎬  Real-Life Situation", data.get("situation",   ""), PALETTE['accent2'])
-
-        sentences = data.get("sentences", [])
-        if sentences:
-            ex_card = Card()
-            ex_layout = QVBoxLayout(ex_card)
-            ex_layout.setContentsMargins(24, 20, 24, 20)
-            ex_layout.setSpacing(10)
-
-            hdr = QLabel("✏️  Example Sentences")
-            hdr.setFont(QFont("Segoe UI", 13, QFont.Weight.Bold))
-            hdr.setStyleSheet(f"color: {PALETTE['success']}; background: transparent; border: none;")
-            ex_layout.addWidget(hdr)
-
-            for i, s in enumerate(sentences):
-                s_fmt = re.sub(r'\*(.+?)\*', r'<b style="color:#7C6AF7">\1</b>', s)
-                lbl = QLabel(
-                    f"<span style='color:{PALETTE['subtext']}'>{i+1}.</span>  {s_fmt}"
-                )
-                lbl.setFont(QFont("Segoe UI", 14))
-                lbl.setWordWrap(True)
-                lbl.setStyleSheet(
-                    f"background: transparent; border: none; color: {PALETTE['text']};"
-                )
-                lbl.setTextFormat(Qt.TextFormat.RichText)
-                ex_layout.addWidget(lbl)
-            self.content_layout.addWidget(ex_card)
-
-        self.content_layout.addStretch()
+        # Call the newly created UI renderer
+        self._render_word_ui(data)
 
     def _add_section_card(self, title, text, color):
         card = Card()
@@ -1151,25 +1157,19 @@ class MainWindow(QMainWindow):
         main_layout.setSpacing(0)
 
         # ── Sidebar Setup ──
-        sidebar = QFrame()
-        sidebar.setFixedWidth(220)
-        sidebar.setStyleSheet(f"background-color: {PALETTE['surface']}; border-right: 1px solid {PALETTE['border']};")
-        sidebar_layout = QVBoxLayout(sidebar)
-        sidebar_layout.setContentsMargins(0, 20, 0, 20)
-        sidebar_layout.setSpacing(10)
+        self.sidebar = QFrame()
+        self.sidebar.setFixedWidth(220)
+        self.sidebar.setStyleSheet(f"background-color: {PALETTE['surface']}; border-right: 1px solid {PALETTE['border']};")
+        self.sidebar_layout = QVBoxLayout(self.sidebar)
+        self.sidebar_layout.setContentsMargins(0, 20, 0, 20)
+        self.sidebar_layout.setSpacing(10)
         # NOTE: Explicit Alignment Flag removed here so the stretch spacer below can work!
-        
-        self.hide_sidebar_btn = QPushButton("◀ Hide Menu")
-        self.hide_sidebar_btn.setObjectName("secondary")
-        self.hide_sidebar_btn.setMinimumHeight(30)
-        self.hide_sidebar_btn.clicked.connect(self._hide_sidebar)
-        sidebar_layout.addWidget(self.hide_sidebar_btn)
 
-        logo = QLabel("📚 VocabMaster")
-        logo.setFont(QFont("Segoe UI", 16, QFont.Weight.Bold))
-        logo.setStyleSheet(f"color: {PALETTE['text']}; margin-bottom: 20px;")
-        sidebar_layout.addWidget(logo)
-        
+        self.logo = QPushButton("📚 VocabMaster")
+        self.logo.setFont(QFont("Segoe UI", 30, QFont.Weight.Bold))
+        self.logo.setStyleSheet(f"color: {PALETTE['text']}; margin-bottom: 20px;")
+        self.sidebar_layout.addWidget(self.logo)
+        self.logo.clicked.connect(self._hide_sidebar)
         # Create Sidebar Buttons with Icons
         self.nav_learn = QPushButton("🔍  Learn Words")
         self.nav_list  = QPushButton("📖  My Word List")
@@ -1178,10 +1178,10 @@ class MainWindow(QMainWindow):
         # Add Navigation Buttons to Sidebar Layout (They stay at the top)
         for btn in [self.nav_learn, self.nav_list, self.nav_tests]:
             btn.setCursor(Qt.CursorShape.PointingHandCursor)
-            sidebar_layout.addWidget(btn)
+            self.sidebar_layout.addWidget(btn)
             
         # This stretch expands dynamically, forcing nav buttons UP and API controls DOWN
-        sidebar_layout.addStretch()
+        self.sidebar_layout.addStretch()
 
         # ── API Key Input Section ── (Stays at the absolute bottom)
         self.api_toggle_btn = QPushButton("🔑  Set Groq API Key")
@@ -1191,7 +1191,7 @@ class MainWindow(QMainWindow):
             border: none; color: {PALETTE['warning']}; font-size: 14px; font-weight: 600;
         """)
         self.api_toggle_btn.clicked.connect(self._toggle_api_input)
-        sidebar_layout.addWidget(self.api_toggle_btn)
+        self.sidebar_layout.addWidget(self.api_toggle_btn)
 
         self.api_input_widget = QWidget()
         input_lay = QVBoxLayout(self.api_input_widget)
@@ -1208,19 +1208,38 @@ class MainWindow(QMainWindow):
         self.api_save_btn.setStyleSheet(f"padding: 8px; font-size: 12px; border-radius: 6px;")
         self.api_save_btn.clicked.connect(self._save_api_key)
 
-        self.show_sidebar_btn = QPushButton("▶")
-        self.show_sidebar_btn.setObjectName("secondary")
-        self.show_sidebar_btn.setFixedWidth(30)
+        self.show_sidebar_btn = QPushButton("☰")
+        self.show_sidebar_btn.setFixedSize(64, 64)
+        self.show_sidebar_btn.setStyleSheet(f"""
+            QPushButton {{
+                padding: 0px;
+                border-radius: 8px;
+                background-color: {PALETTE['surface']};
+                border: 1px solid {PALETTE['border']};
+                color: {PALETTE['text']};
+                font-weight: bold;
+                font-size: 16px;
+                margin-left: 8px;
+                margin-top: 20px;
+            }}
+            QPushButton:hover {{
+                background-color: {PALETTE['card']};
+                border-color: {PALETTE['accent']};
+            }}
+        """)
         self.show_sidebar_btn.clicked.connect(self._show_sidebar)
         self.show_sidebar_btn.hide() # Hidden by default
+        
+        # We align it to the Top-Left of the main layout so it sits exactly where the sidebar was
+        main_layout.addWidget(self.show_sidebar_btn, alignment=Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
 
         input_lay.addWidget(self.api_input)
         input_lay.addWidget(self.api_save_btn)
         
         self.api_input_widget.hide() # Hidden by default
-        sidebar_layout.addWidget(self.api_input_widget)
+        self.sidebar_layout.addWidget(self.api_input_widget)
 
-        main_layout.addWidget(sidebar)
+        main_layout.addWidget(self.sidebar)
 
         # ── Stacked Widget & Pages Setup ──
         self.stack = QStackedWidget()
