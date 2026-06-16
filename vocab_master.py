@@ -224,15 +224,17 @@ def db_save_word(data: dict):
 def db_get_all_words() -> list:
     conn = db_connect()
     try:
+        # Added 'situation' to the SELECT statement
         rows = conn.execute(
-            "SELECT word, pos, definition, sentences FROM words ORDER BY learned_at DESC"
+            "SELECT word, pos, definition, situation, sentences FROM words ORDER BY learned_at DESC"
         ).fetchall()
         return [
             {
-                "word":      r[0],
-                "pos":       r[1],
+                "word":       r[0],
+                "pos":        r[1],
                 "definition": r[2],
-                "sentences": json.loads(r[3]) if r[3] else [],
+                "situation":  r[3],  # <-- Now properly loading from DB!
+                "sentences":  json.loads(r[4]) if r[4] else [],
             }
             for r in rows
         ]
@@ -830,6 +832,42 @@ class BigTestPage(QWidget):
         r_lay.setSpacing(16)
         r_lay.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
+        # ── Preview card (Before Exam) ──
+        self.preview_card = Card()
+        self.preview_card.hide()
+        prev_lay = QVBoxLayout(self.preview_card)
+        prev_lay.setContentsMargins(32, 28, 32, 28)
+        prev_lay.setSpacing(16)
+
+        prev_title = QLabel("👀  Exam Preview")
+        prev_title.setFont(QFont("Segoe UI", 16, QFont.Weight.Bold))
+        prev_title.setStyleSheet(f"color: {PALETTE['accent']}; background: transparent;")
+        prev_lay.addWidget(prev_title)
+
+        prev_sub = QLabel("Skim through the 10 words for this exam. Once you start, there's no going back!")
+        prev_sub.setFont(QFont("Segoe UI", 12))
+        prev_sub.setStyleSheet(f"color: {PALETTE['subtext']}; background: transparent;")
+        prev_lay.addWidget(prev_sub)
+
+        # Scrollable list for the 10 words
+        self.prev_scroll = QScrollArea()
+        self.prev_scroll.setWidgetResizable(True)
+        self.prev_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self.prev_content = QWidget()
+        self.prev_content.setStyleSheet("background: transparent;")
+        self.prev_layout = QVBoxLayout(self.prev_content)
+        self.prev_layout.setSpacing(10)
+        self.prev_scroll.setWidget(self.prev_content)
+        prev_lay.addWidget(self.prev_scroll, 1)
+
+        self.start_exam_btn = QPushButton("Start Exam 🚀")
+        self.start_exam_btn.setObjectName("primary")
+        self.start_exam_btn.setMinimumHeight(48)
+        self.start_exam_btn.clicked.connect(self._start_ai_test)
+        prev_lay.addWidget(self.start_exam_btn)
+
+        layout.addWidget(self.preview_card, 1)
+
         self.res_emoji = QLabel()
         self.res_emoji.setFont(QFont("Segoe UI", 52))
         self.res_emoji.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -890,39 +928,61 @@ class BigTestPage(QWidget):
         self._generate_test_list()
 
     def _generate_test_list(self):
-        all_words = [w["word"] for w in db_get_all_words()]
-        # Chunk into groups of 10
+        all_words = db_get_all_words() # Now passing the full dictionaries!
         chunks = [all_words[i:i + 10] for i in range(0, len(all_words), 10)]
         
-        # Generate UI Buttons for each test block
         for i, chunk in enumerate(chunks):
             if len(chunk) == 10:
                 btn = QPushButton(f"Practice Test {i+1}  (Words {i*10 + 1} - {(i+1)*10})")
                 btn.setObjectName("secondary")
                 btn.setMinimumHeight(48)
-                btn.clicked.connect(lambda checked, c=chunk: self._start_specific_test(c))
+                btn.clicked.connect(lambda checked, c=chunk: self._show_preview(c))
                 self.test_list_layout.addWidget(btn)
             else:
-                # Incomplete chunk (less than 10 words)
                 lbl = QLabel(f"🔒 Learn {10 - len(chunk)} more words to unlock Test {i+1}")
                 lbl.setFont(QFont("Segoe UI", 12))
                 lbl.setStyleSheet(f"color: {PALETTE['subtext']}; margin-top: 10px;")
                 lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
                 self.test_list_layout.addWidget(lbl)
 
-    def _start_specific_test(self, chunk_words):
+    def _show_preview(self, chunk_dicts):
+        """Shows the 10 words and definitions before the AI test starts."""
+        self.test_list_widget.hide()
+        self.intro_card.hide()
+        
+        # Save just the word strings to send to the AI later
+        self._current_chunk_words = [w["word"] for w in chunk_dicts]
+        
+        # Clear old preview list
+        while self.prev_layout.count():
+            item = self.prev_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+
+        # Populate preview list
+        for w in chunk_dicts:
+            lbl = QLabel(f"<b style='color:{PALETTE['accent']}'>{w['word'].capitalize()}</b> - {w.get('definition', '')}")
+            lbl.setFont(QFont("Segoe UI", 13))
+            lbl.setWordWrap(True)
+            lbl.setStyleSheet(f"color: {PALETTE['text']}; padding: 4px;")
+            self.prev_layout.addWidget(lbl)
+
+        self.prev_layout.addStretch()
+        self.preview_card.show()
+
+    def _start_ai_test(self):
+        """Triggered when the user clicks 'Start Exam' from the preview."""
         self._current_q = 0
         self._score     = 0
         
-        # Hide the list and show loading text
-        self.test_list_widget.hide()
-        self.loading_lbl.setText(f"🧠  Generating {len(chunk_words)} customized questions via AI…")
+        self.preview_card.hide()
+        self.intro_card.show() # Show intro card to hold the loading label
+        self.intro_count_lbl.hide() 
+        
+        self.loading_lbl.setText(f"🧠 Generating questions for these 10 words via AI...")
         self.loading_lbl.show()
-        self.q_card.hide()
-        self.result_card.hide()
 
-        # Send only the 10 words to the AI worker
-        self.worker = BigTestWorker(chunk_words)
+        self.worker = BigTestWorker(self._current_chunk_words)
         self.worker.result_ready.connect(self._on_questions_ready)
         self.worker.error_occurred.connect(self._on_test_error)
         self.worker.start()
