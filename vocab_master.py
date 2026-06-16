@@ -1293,12 +1293,18 @@ class MainWindow(QMainWindow):
 # ── ENTRY POINT ───────────────────────────────────────────────────────────────
 
 def main():
-    app = QApplication(sys.argv)
+    # Safely retrieve the existing QApplication from the loader, or create a new one
+    app = QApplication.instance()
+    if app is None:
+        app = QApplication(sys.argv)
+        
     app.setStyleSheet(STYLESHEET)
     app.setStyle("Fusion")
 
     window = MainWindow()
     window.show()
+    
+    # Safely start the new event loop
     sys.exit(app.exec())
 
 
