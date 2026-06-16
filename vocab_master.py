@@ -15,6 +15,7 @@ from groq import Groq
 import keyboard
 import pyperclip
 import time
+import difflib
 
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
@@ -604,17 +605,35 @@ class LearningPage(QWidget):
         if not word:
             return
             
-        # 1. Caching Check: Look in DB first
-        all_words = db_get_all_words()
-        for w in all_words:
+        all_words_data = db_get_all_words()
+        
+        # 1. Caching Check: Exact Match
+        for w in all_words_data:
             if w["word"].lower() == word.lower():
                 self._current_word = w["word"]
                 self.status_label.setText("Loaded from local memory.")
+                self.word_input.setText(w["word"]) # Update input case to match DB
                 self._clear_content()
-                self._render_word_ui(w) # Abstracted the UI rendering to a new method
+                self._render_word_ui(w)
                 return
 
-        # 2. If not in DB, proceed to AI
+        # 2. Smart Typo Check: Fuzzy Match
+        db_word_strings = [w["word"].lower() for w in all_words_data]
+        # cutoff=0.8 means the words must be at least 80% similar to trigger a match
+        close_matches = difflib.get_close_matches(word.lower(), db_word_strings, n=1, cutoff=0.8)
+        
+        if close_matches:
+            matched_str = close_matches[0]
+            matched_data = next((w for w in all_words_data if w["word"].lower() == matched_str), None)
+            if matched_data:
+                self._current_word = matched_data["word"]
+                self.status_label.setText(f"Typo corrected. Loaded '{matched_data['word']}' from memory.")
+                self.word_input.setText(matched_data["word"]) # Auto-correct the user's input field
+                self._clear_content()
+                self._render_word_ui(matched_data)
+                return
+
+        # 3. If no exact or fuzzy match, proceed to AI
         self._current_word = word
         self.search_btn.setEnabled(False)
         self.status_label.setText(f"✨ Asking AI about '{word}'…")
