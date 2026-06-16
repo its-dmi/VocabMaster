@@ -339,26 +339,29 @@ class BigTestWorker(QThread):
         try:
             client = Groq(api_key=GROQ_API_KEY)
             words_str = ", ".join(self.words)
+            
             prompt = f"""Create a strict vocabulary test for these words: {words_str}. 
 
 CRITICAL RULES:
-- NEVER use the target word, its root, or its variations in the "question" text or the wrong "options". 
-- The student must genuinely deduce the answer from context.
+- Mix the 4 question types below randomly.
+- NEVER use the target word or its root in the question text or options for 'fill_blank' and 'definition_match'.
+- For 'multiple_choice', ALL 4 options MUST explicitly contain the target word, but 3 must use it nonsensically.
 
-1. "fill_blank": A sentence with "___" where the word belongs. 
-2. "multiple_choice": Ask "Which sentence uses the word correctly?". The "options" must be 4 completely different sentences. Only ONE sentence uses the target word correctly.
-3. "scenario": A brief situation. Ask "Does the concept of the word apply here?" Answer "Yes" or "No".
+Return ONLY a JSON array of objects using these exact formats:
 
-Respond ONLY with valid JSON array:
-[
-  {{
-    "word": "lucid",
-    "type": "fill_blank",
-    "question": "The scientist gave an ___ explanation that made the complex topic easy to understand.",
-    "answer": "lucid",
-    "explanation": "Lucid means clear and easy to understand."
-  }}
-]"""
+1. fill_blank:
+{{ "word": "target", "type": "fill_blank", "question": "Sentence with ___.", "answer": "target", "explanation": "..." }}
+
+2. multiple_choice:
+{{ "word": "target", "type": "multiple_choice", "question": "Which sentence uses the word 'target' correctly?", "options": ["...", "...", "...", "..."], "correct": 2, "explanation": "..." }}
+(Note: "correct" must be the integer index 0-3 of the right option)
+
+3. scenario:
+{{ "word": "target", "type": "scenario", "question": "Brief situation. Does the concept of 'target' apply here?", "answer": "yes", "explanation": "..." }}
+
+4. definition_match:
+{{ "word": "target", "type": "definition_match", "question": "What word means: [dictionary definition without the word]?", "answer": "target", "explanation": "..." }}
+"""
 
             response = client.chat.completions.create(
                 model=GROQ_MODEL,
@@ -877,9 +880,11 @@ class BigTestPage(QWidget):
             "fill_blank":      "📝  Guess the Word from Context",
             "multiple_choice": "🔘  Which Sentence Uses It Correctly?",
             "scenario":        "🧠  Does the Word Apply?",
+            "definition_match":"📖  Guess the Word from its Meaning"
         }.get(qtype, "Question"))
 
-        if qtype == "fill_blank":
+        # Both text-input modes hide the word
+        if qtype in ("fill_blank", "definition_match"):
             self.word_label.setText("Word: ???")
             self.word_label.setStyleSheet(
                 f"color: {PALETTE['danger']}; background: transparent; border: none; font-size: 15px;"
@@ -902,7 +907,7 @@ class BigTestPage(QWidget):
             if item.widget():
                 item.widget().deleteLater()
 
-        if qtype == "fill_blank":
+        if qtype in ("fill_blank", "definition_match"):
             self.fill_input.show()
 
         elif qtype == "multiple_choice":
@@ -942,7 +947,7 @@ class BigTestPage(QWidget):
         correct     = False
         explanation = q.get("explanation", "")
 
-        if qtype == "fill_blank":
+        if qtype in ("fill_blank", "definition_match"):
             user_ans    = self.fill_input.text().strip().lower()
             correct_ans = q.get("answer", "").strip().lower()
             correct     = user_ans == correct_ans
@@ -964,27 +969,22 @@ class BigTestPage(QWidget):
 
         if correct:
             self._score += 1
-            self.feedback_lbl.setStyleSheet(
-                f"color: {PALETTE['success']}; background: transparent; border: none;"
-            )
+            self.feedback_lbl.setStyleSheet(f"color: {PALETTE['success']}; background: transparent; border: none;")
             self.feedback_lbl.setText(f"✅  Correct!  {explanation}")
         else:
-            self.feedback_lbl.setStyleSheet(
-                f"color: {PALETTE['danger']}; background: transparent; border: none;"
-            )
+            self.feedback_lbl.setStyleSheet(f"color: {PALETTE['danger']}; background: transparent; border: none;")
             self.feedback_lbl.setText(f"❌  Not quite.  {explanation}")
 
         self.feedback_lbl.show()
         self.submit_btn.hide()
-        if qtype == "fill_blank":
+        
+        if qtype in ("fill_blank", "definition_match"):
             self.fill_input.setEnabled(False)
         else:
             for b in self._btn_group.buttons():
                 b.setEnabled(False)
 
-        self.next_btn.setText(
-            "Next →" if self._current_q < len(self._questions) - 1 else "See Final Results 🏆"
-        )
+        self.next_btn.setText("Next →" if self._current_q < len(self._questions) - 1 else "See Final Results 🏆")
         self.next_btn.show()
 
     def _show_warn(self, msg):
@@ -1110,33 +1110,28 @@ class MainWindow(QMainWindow):
         main_layout.setSpacing(0)
 
         # ── Sidebar Setup ──
-        sidebar = QFrame()
-        sidebar.setFixedWidth(220)
-        sidebar.setStyleSheet(f"background-color: {PALETTE['surface']}; border-right: 1px solid {PALETTE['border']};")
-        sidebar_layout = QVBoxLayout(sidebar)
+        self.sidebar = QFrame()  # Changed to instance variable (self.sidebar)
+        self.sidebar.setFixedWidth(220)
+        self.sidebar.setStyleSheet(f"background-color: {PALETTE['surface']}; border-right: 1px solid {PALETTE['border']};")
+        sidebar_layout = QVBoxLayout(self.sidebar)
         sidebar_layout.setContentsMargins(0, 20, 0, 20)
         sidebar_layout.setSpacing(10)
-        # NOTE: Explicit Alignment Flag removed here so the stretch spacer below can work!
         
         logo = QLabel("📚 VocabMaster")
         logo.setFont(QFont("Segoe UI", 16, QFont.Weight.Bold))
         logo.setStyleSheet(f"color: {PALETTE['text']}; margin-bottom: 20px;")
         sidebar_layout.addWidget(logo)
         
-        # Create Sidebar Buttons with Icons
         self.nav_learn = QPushButton("🔍  Learn Words")
         self.nav_list  = QPushButton("📖  My Word List")
         self.nav_tests = QPushButton("🏆  Practice Tests")
         
-        # Add Navigation Buttons to Sidebar Layout (They stay at the top)
         for btn in [self.nav_learn, self.nav_list, self.nav_tests]:
             btn.setCursor(Qt.CursorShape.PointingHandCursor)
             sidebar_layout.addWidget(btn)
             
-        # This stretch expands dynamically, forcing nav buttons UP and API controls DOWN
         sidebar_layout.addStretch()
 
-        # ── API Key Input Section ── (Stays at the absolute bottom)
         self.api_toggle_btn = QPushButton("🔑  Set Groq API Key")
         self.api_toggle_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.api_toggle_btn.setStyleSheet(f"""
@@ -1164,24 +1159,54 @@ class MainWindow(QMainWindow):
         input_lay.addWidget(self.api_input)
         input_lay.addWidget(self.api_save_btn)
         
-        self.api_input_widget.hide() # Hidden by default
+        self.api_input_widget.hide() 
         sidebar_layout.addWidget(self.api_input_widget)
 
-        main_layout.addWidget(sidebar)
+        main_layout.addWidget(self.sidebar)
+
+        # ── Right Content Area (Top Bar + Stack) ──
+        self.main_content = QWidget()
+        content_layout = QVBoxLayout(self.main_content)
+        content_layout.setContentsMargins(0, 0, 0, 0)
+        content_layout.setSpacing(0)
+
+        # Top Navigation Bar
+        self.top_bar = QWidget()
+        self.top_bar.setFixedHeight(50)
+        self.top_bar.setStyleSheet(f"background-color: {PALETTE['bg']}; border-bottom: 1px solid {PALETTE['border']};")
+        top_bar_layout = QHBoxLayout(self.top_bar)
+        top_bar_layout.setContentsMargins(15, 0, 15, 0)
+
+        # The Toggle Button
+        self.toggle_sidebar_btn = QPushButton("☰")
+        self.toggle_sidebar_btn.setFixedSize(40, 40)
+        self.toggle_sidebar_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.toggle_sidebar_btn.setStyleSheet(f"""
+            QPushButton {{
+                background: transparent; color: {PALETTE['text']};
+                font-size: 24px; border: none; border-radius: 8px;
+            }}
+            QPushButton:hover {{ background-color: {PALETTE['surface']}; }}
+        """)
+        self.toggle_sidebar_btn.clicked.connect(self._toggle_sidebar)
+        
+        top_bar_layout.addWidget(self.toggle_sidebar_btn)
+        top_bar_layout.addStretch()
+        content_layout.addWidget(self.top_bar)
 
         # ── Stacked Widget & Pages Setup ──
         self.stack = QStackedWidget()
-        main_layout.addWidget(self.stack, 1)
+        content_layout.addWidget(self.stack, 1)
 
-        # Initialize Pages
         self.learn_page     = LearningPage()
-        self.word_list_page = WordListPage()  # The new page we just added
+        self.word_list_page = WordListPage()  
         self.big_test_page  = BigTestPage()
 
-        # Add to Stack
-        self.stack.addWidget(self.learn_page)       # Index 0
-        self.stack.addWidget(self.word_list_page)   # Index 1
-        self.stack.addWidget(self.big_test_page)    # Index 2
+        self.stack.addWidget(self.learn_page)       
+        self.stack.addWidget(self.word_list_page)   
+        self.stack.addWidget(self.big_test_page)    
+
+        main_layout.addWidget(self.main_content, 1)
 
         # ── Connect Sidebar Buttons ──
         self.nav_learn.clicked.connect(lambda: self._switch_page(0))
@@ -1201,6 +1226,10 @@ class MainWindow(QMainWindow):
 
         # Set Initial Page
         self._switch_page(0)
+
+    def _toggle_sidebar(self):
+        """Toggles the visibility of the sidebar."""
+        self.sidebar.setVisible(not self.sidebar.isVisible())
 
     def _toggle_api_input(self):
         """Shows or hides the API key input bar underneath the button."""
